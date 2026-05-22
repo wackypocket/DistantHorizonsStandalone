@@ -119,16 +119,19 @@ public class FullDataToRenderDataTransformer
 			return columnSource;
 		}
 		
-		columnSource.markNotEmpty();
 		int baseX = DhSectionPos.getMinCornerBlockX(pos);
 		int baseZ = DhSectionPos.getMinCornerBlockZ(pos);
-		
+
 		try(ColumnRenderView columnArrayView = ColumnRenderView.getPooled();
 			PhantomArrayListCheckout phantomCheckout = ARRAY_LIST_POOL.checkoutLongArrays(1);
 			ColumnRenderView tempExpandingColumnView = ColumnRenderView.getPooled();
 			RenderDataPointReducingList reducingList = new RenderDataPointReducingList())
 		{
 			DhBlockPosMutable mutableBlockPos = new DhBlockPosMutable();
+			// Track whether any column actually produced non-void render data.
+			// Prevents marking the whole ColumnRenderSource non-empty when all
+			// columns collapse to void (important for void-world scenarios).
+			boolean anyNonVoidData = false;
 			for (int x = 0; x < FullDataSourceV2.WIDTH; x++)
 			{
 				for (int z = 0; z < FullDataSourceV2.WIDTH; z++)
@@ -136,22 +139,32 @@ public class FullDataToRenderDataTransformer
 					columnSource.populateColumnView(columnArrayView, x, z);
 					LongArrayList dataColumn = fullDataSource.getColumnAtRelPos(x, z);
 
-					updateOrReplaceRenderDataViewColumnWithFullDataColumn(
+					boolean colHasData = updateOrReplaceRenderDataViewColumnWithFullDataColumn(
 						levelWrapper, fullDataSource,
 						// bit shift is to account for LODs with a detail level greater than 0 so the block pos is correct
 						baseX + BitShiftUtil.pow(x, dataDetail), baseZ + BitShiftUtil.pow(z, dataDetail),
 						columnArrayView, dataColumn,
 						// pooled references so we don't need to re-allocate/get them 4000 times per render source
 						phantomCheckout, tempExpandingColumnView, reducingList, mutableBlockPos);
+
+					anyNonVoidData = anyNonVoidData || colHasData;
 				}
+			}
+
+			if (anyNonVoidData)
+			{
+				columnSource.markNotEmpty();
 			}
 		}
 		
 		return columnSource;
 	}
 	
-	/** Updates the given {@link ColumnRenderView} to match the incoming Full data {@link LongArrayList} */
-	public static void updateOrReplaceRenderDataViewColumnWithFullDataColumn(
+	/**
+	 * Updates the given {@link ColumnRenderView} to match the incoming Full data {@link LongArrayList}.
+	 * @return true if this column contains any non-void render data, false if the column is empty/void.
+	 */
+	public static boolean updateOrReplaceRenderDataViewColumnWithFullDataColumn(
 			IClientLevelWrapper levelWrapper,
 			FullDataSourceV2 fullDataSource, int blockX, int blockZ,
 			ColumnRenderView columnArrayView,
@@ -163,14 +176,14 @@ public class FullDataToRenderDataTransformer
 		if (fullDataColumn == null 
 			|| fullDataColumn.size() == 0)
 		{
-			return;
+			return false;
 		}
 		
 		int fullDataLength = fullDataColumn.size();
 		if (fullDataLength <= columnArrayView.maxVerticalSliceCount)
 		{
 			// Directly use the arrayView since it fits.
-			setRenderColumnView(levelWrapper, fullDataSource, blockX, blockZ, columnArrayView, fullDataColumn, mutableBlockPos);
+			return setRenderColumnView(levelWrapper, fullDataSource, blockX, blockZ, columnArrayView, fullDataColumn, mutableBlockPos);
 		}
 		else
 		{
@@ -178,12 +191,13 @@ public class FullDataToRenderDataTransformer
 
 			// expand the ColumnArrayView to fit the new larger max vertical size
 			tempExpandingColumnView.populate(dataArrayList, fullDataLength, 0, fullDataLength);
-			setRenderColumnView(levelWrapper, fullDataSource, blockX, blockZ, tempExpandingColumnView, fullDataColumn, mutableBlockPos);
-			
+			boolean result = setRenderColumnView(levelWrapper, fullDataSource, blockX, blockZ, tempExpandingColumnView, fullDataColumn, mutableBlockPos);
+
 			columnArrayView.changeVerticalSizeFrom(tempExpandingColumnView, reducingList);
+			return result;
 		}
 	}
-	private static void setRenderColumnView(
+	private static boolean setRenderColumnView(
 			IClientLevelWrapper levelWrapper, FullDataSourceV2 fullDataSource,
 			int blockX, int blockZ,
 			ColumnRenderView renderColumnData, LongArrayList fullColumnData,
@@ -488,8 +502,14 @@ public class FullDataToRenderDataTransformer
 		
 		if (isColumnVoid)
 		{
+			// Column produced no renderable blocks; write EMPTY_DATA and
+			// signal the caller that this column is void so callers can
+			// avoid marking the entire source as non-empty.
 			renderColumnData.set(0, RenderDataPointUtil.EMPTY_DATA);
+			return false;
 		}
+
+		return true;
 	}
 	
 	

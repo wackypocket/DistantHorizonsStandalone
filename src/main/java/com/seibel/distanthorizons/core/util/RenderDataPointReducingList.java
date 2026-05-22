@@ -441,6 +441,19 @@ public class RenderDataPointReducingList extends AbstractPhantomArrayList
 				this.setSortingIndex(writeIndex++, readIndex);
 			}
 		}
+
+		// If writeIndex = 0, then there's nothing to sort or re-link.
+		// This can happen when all of datas equal DEFAUlT_DATA, not just small size
+		if (writeIndex == 0)
+		{
+			// No visible nodes to keep: clear smallest/biggest so we don't
+			// retain stale min/max values. This is important for cases where
+			// a column collapses to empty (void worlds) and prevents
+			// later reduction/merge logic from using invalid indices.
+			this.smallest = (short)NULL;
+			this.biggest = (short)NULL;
+			return;
+		}
 		
 		this.sortBySize(writeIndex);
 		for (int index = 1; index < writeIndex; index++) 
